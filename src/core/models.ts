@@ -14,6 +14,11 @@ export interface LifeNode {
   categoryName: string;
   color: string;
   specimenQuote: string;
+  /**
+   * 是否为浇水催生的“意外分支”（奇遇枝桠）。
+   * 旧版本序列化的树数据没有该字段，读取时需按 false 兼容处理。
+   */
+  isSerendipity?: boolean;
   childrenIds: string[];
 }
 

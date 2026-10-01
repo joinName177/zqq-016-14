@@ -17,15 +17,16 @@ export function renderTreeApp(
   presets: string[],
   handlers: TreeUIHandlers
 ) {
-  const esc = (s: string) =>
-    s.replace(/[&<>'"]/g, t => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[t] || t));
+  const esc = (s: unknown) =>
+    String(s ?? '').replace(/[&<>'"]/g, t => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[t] || t));
 
   // Organize nodes by layer index (0 to 4)
+  // 旧树节点的 layerIndex 可能缺失或越界：钳制到有效分代轨道，绝不静默丢弃节点
   const layers: LifeNode[][] = [[], [], [], [], []];
   Object.values(tree.nodes).forEach(n => {
-    if (layers[n.layerIndex]) {
-      layers[n.layerIndex].push(n);
-    }
+    const rawIdx = typeof n.layerIndex === 'number' && Number.isFinite(n.layerIndex) ? n.layerIndex : 0;
+    const idx = Math.min(Math.max(rawIdx, 0), layers.length - 1);
+    layers[idx].push(n);
   });
 
   const eraTitles = ['起点分歧点', '+1年·涟漪微漾', '+3年·风向转折', '+5年·航道分野', '+10年·宿命标本'];
@@ -79,6 +80,7 @@ export function renderTreeApp(
                      style="--cat-color: ${node.color};" 
                      data-id="${node.id}">
                   <span class="node-category-tag">${esc(node.categoryName)}</span>
+                  ${node.isSerendipity ? '<span class="node-serendipity-tag">✨ 意外分支</span>' : ''}
                   <div class="node-title">${esc(node.title)}</div>
                   <div class="node-desc">${esc(node.scenarioDescription)}</div>
                   <div class="node-quote">${esc(node.specimenQuote)}</div>
@@ -138,10 +140,10 @@ export function renderTreeApp(
                     <div class="specimen-quote">${esc(s.quote)}</div>
                     <div class="specimen-path">
                       <strong>演化因果链：</strong><br />
-                      ${s.pathWay.map(p => `↳ ${esc(p)}`).join('<br />')}
+                      ${(Array.isArray(s.pathWay) ? s.pathWay : []).map(p => `↳ ${esc(p)}`).join('<br />')}
                     </div>
                     <div class="specimen-footer">
-                      <span>采集时空：${s.harvestedAt}</span>
+                      <span>采集时空：${esc(s.harvestedAt)}</span>
                       <button class="btn-del-specimen" data-delid="${s.id}">移出标本集</button>
                     </div>
                   </div>

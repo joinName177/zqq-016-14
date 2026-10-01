@@ -14,6 +14,110 @@ const CATEGORY_MAP: Record<LifeCategory, { name: string; color: string }> = {
   twist: { name: '奇点与宿命', color: '#8b80b6' }
 };
 
+const VALID_CATEGORIES: LifeCategory[] = ['career', 'romance', 'inner', 'twist'];
+
+const clampLayerIndex = (v: unknown): number => {
+  const n = typeof v === 'number' && Number.isFinite(v) ? Math.floor(v) : 0;
+  return Math.min(Math.max(n, 0), ERA_LABELS.length - 1);
+};
+
+const clampVitality = (v: unknown): number => {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : 60;
+  return Math.min(Math.max(Math.round(n), 0), 100);
+};
+
+const toCategory = (v: unknown): LifeCategory =>
+  VALID_CATEGORIES.includes(v as LifeCategory) ? (v as LifeCategory) : 'twist';
+
+/**
+ * 旧版本树数据兼容归一化。
+ *
+ * 早期序列化的树缺少“意外分支”等后来新增的字段（甚至缺 childrenIds / waterCount），
+ * 直接交给渲染或引擎会抛错。这里为缺失字段补齐兼容默认值、修复父子引用，
+ * 并保留旧树里的全部节点；只有当数据完全不可辨认（没有可用节点）时才返回 null，
+ * 由调用方生长新树——绝不把旧资料当成空树丢弃。
+ */
+export function normalizeCounterfactualTree(raw: unknown): CounterfactualTree | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const data = raw as Partial<CounterfactualTree>;
+  if (!data.nodes || typeof data.nodes !== 'object') return null;
+
+  const entries = Object.entries(data.nodes).filter(([, n]) => n && typeof n === 'object');
+  if (entries.length === 0) return null;
+
+  const nodes: Record<string, LifeNode> = {};
+  entries.forEach(([key, rawNode], idx) => {
+    const n = rawNode as Partial<LifeNode>;
+    const id = typeof n.id === 'string' && n.id ? n.id : key || `node-legacy-${idx}`;
+    const layerIndex = clampLayerIndex(n.layerIndex);
+    const category = toCategory(n.category);
+    const title = typeof n.title === 'string' && n.title ? n.title : '未命名的平行分支';
+    const eraLabel = typeof n.eraLabel === 'string' && n.eraLabel ? n.eraLabel : ERA_LABELS[layerIndex];
+
+    nodes[id] = {
+      id,
+      parentId: typeof n.parentId === 'string' && n.parentId ? n.parentId : undefined,
+      layerIndex,
+      eraLabel,
+      title,
+      scenarioDescription:
+        typeof n.scenarioDescription === 'string' && n.scenarioDescription
+          ? n.scenarioDescription
+          : '这段平行人生的细节已随旧时光模糊，但枝桠本身仍被完整保留。',
+      vitality: clampVitality(n.vitality),
+      isPruned: n.isPruned === true,
+      waterCount:
+        typeof n.waterCount === 'number' && Number.isFinite(n.waterCount) && n.waterCount > 0
+          ? Math.floor(n.waterCount)
+          : 0,
+      category,
+      categoryName:
+        typeof n.categoryName === 'string' && n.categoryName ? n.categoryName : CATEGORY_MAP[category].name,
+      color: typeof n.color === 'string' && n.color ? n.color : CATEGORY_MAP[category].color,
+      specimenQuote:
+        typeof n.specimenQuote === 'string' && n.specimenQuote
+          ? n.specimenQuote
+          : '“未被言说的命运，同样在虚空中生长。”',
+      // 旧树没有“意外分支”字段：缺省 false；若旧节点从标题/时代标签可辨认出是奇遇枝桠，则回填标记
+      isSerendipity:
+        n.isSerendipity === true || eraLabel.includes('奇遇') || title.includes('意外分支'),
+      childrenIds: Array.isArray(n.childrenIds)
+        ? [...new Set(n.childrenIds.filter((c): c is string => typeof c === 'string'))]
+        : []
+    };
+  });
+
+  // 修复结构：剔除悬空引用，但保留所有节点本身；并按 parentId 补全父节点的 childrenIds
+  Object.values(nodes).forEach(node => {
+    node.childrenIds = node.childrenIds.filter(cid => cid !== node.id && nodes[cid]);
+    if (node.parentId && !nodes[node.parentId]) node.parentId = undefined;
+  });
+  Object.values(nodes).forEach(node => {
+    if (node.parentId) {
+      const parent = nodes[node.parentId];
+      if (parent && !parent.childrenIds.includes(node.id)) parent.childrenIds.push(node.id);
+    }
+  });
+
+  const rootId =
+    typeof data.rootId === 'string' && nodes[data.rootId]
+      ? data.rootId
+      : (Object.values(nodes).find(n => !n.parentId)?.id ?? Object.keys(nodes)[0]);
+
+  return {
+    id: typeof data.id === 'string' && data.id ? data.id : `tree-${Date.now()}`,
+    assumption:
+      typeof data.assumption === 'string' && data.assumption ? data.assumption : '如果当初……（旧时空遗留的假设）',
+    rootId,
+    nodes,
+    createdAt:
+      typeof data.createdAt === 'string' && data.createdAt ? data.createdAt : new Date().toLocaleDateString('zh-CN'),
+    specimens: Array.isArray(data.specimens)
+      ? data.specimens.filter((s): s is LifeSpecimen => Boolean(s) && typeof s === 'object')
+      : []
+  };
+}
+
 export function buildCounterfactualTree(assumption: string): CounterfactualTree {
   const seed = [...assumption].reduce((sum, c) => sum + c.charCodeAt(0), 0);
   const nodes: Record<string, LifeNode> = {};
@@ -32,6 +136,7 @@ export function buildCounterfactualTree(assumption: string): CounterfactualTree 
     categoryName: CATEGORY_MAP.twist.name,
     color: CATEGORY_MAP.twist.color,
     specimenQuote: '“所有的未曾发生，都曾在虚空中剧烈生长。”',
+    isSerendipity: false,
     childrenIds: ['node-1-a', 'node-1-b']
   };
 
@@ -133,6 +238,7 @@ export function buildCounterfactualTree(assumption: string): CounterfactualTree 
         categoryName: CATEGORY_MAP[s.cat].name,
         color: CATEGORY_MAP[s.cat].color,
         specimenQuote: s.quote,
+        isSerendipity: false,
         childrenIds: next ? [next.id] : []
       };
     });
@@ -155,8 +261,10 @@ export function waterBranch(tree: CounterfactualTree, nodeId: string): Counterfa
   const target = tree.nodes[nodeId];
   if (!target) return tree;
 
-  target.vitality = Math.min(100, target.vitality + 20);
-  target.waterCount += 1;
+  // 兼容旧树节点：缺失的数值/数组字段先按默认值补齐，避免直接抛错
+  target.vitality = Math.min(100, (target.vitality ?? 0) + 20);
+  target.waterCount = (target.waterCount ?? 0) + 1;
+  if (!Array.isArray(target.childrenIds)) target.childrenIds = [];
 
   // If watered 2 times and in layer 1 or 2, sprout a serendipity branch!
   if (target.waterCount === 2 && target.layerIndex < 3 && target.childrenIds.length < 2) {
@@ -177,6 +285,7 @@ export function waterBranch(tree: CounterfactualTree, nodeId: string): Counterfa
       categoryName: CATEGORY_MAP[cat].name,
       color: CATEGORY_MAP[cat].color,
       specimenQuote: '“当你足够专注地灌溉，奇迹就会在干涸的断枝上抽芽。”',
+      isSerendipity: true,
       childrenIds: []
     };
     target.childrenIds.push(newId);
@@ -191,7 +300,8 @@ export function pruneBranch(tree: CounterfactualTree, nodeId: string): Counterfa
     if (!n) return;
     n.isPruned = true;
     n.vitality = 0;
-    n.childrenIds.forEach(pruneRecursive);
+    // 旧树节点可能缺少 childrenIds，按空数组兼容
+    (Array.isArray(n.childrenIds) ? n.childrenIds : []).forEach(pruneRecursive);
   };
 
   pruneRecursive(nodeId);
@@ -202,10 +312,12 @@ export function harvestSpecimen(tree: CounterfactualTree, nodeId: string): LifeS
   const node = tree.nodes[nodeId];
   if (!node) throw new Error('节点不存在');
 
-  // Trace pathway back to root
+  // Trace pathway back to root (visited 集合防止旧数据父链成环导致死循环)
   const pathWay: string[] = [];
+  const visited = new Set<string>();
   let curr: LifeNode | undefined = node;
-  while (curr) {
+  while (curr && !visited.has(curr.id)) {
+    visited.add(curr.id);
     pathWay.unshift(curr.title);
     curr = curr.parentId ? tree.nodes[curr.parentId] : undefined;
   }
@@ -219,7 +331,7 @@ export function harvestSpecimen(tree: CounterfactualTree, nodeId: string): LifeS
     pathWay,
     quote: node.specimenQuote,
     butterflyTag: node.categoryName,
-    resonanceRating: Math.min(99, 65 + node.vitality / 3),
+    resonanceRating: Math.min(99, 65 + (node.vitality ?? 0) / 3),
     harvestedAt: new Date().toLocaleString('zh-CN', { hour12: false })
   };
 
