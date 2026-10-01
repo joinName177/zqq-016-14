@@ -14,6 +14,106 @@ const CATEGORY_MAP: Record<LifeCategory, { name: string; color: string }> = {
   twist: { name: '奇点与宿命', color: '#8b80b6' }
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function asFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/**
+ * 兼容迁移：把旧版本序列化的反事实树补齐当前版本所需字段。
+ *
+ * 旧树的节点早于"意外分支（奇遇枝桠）"功能落库，缺少 childrenIds
+ * （以及其它后增字段），直接浇水 / 修剪会读到 undefined 而抛错。
+ *
+ * 迁移原则：
+ * 1. 旧资料不是空树——只要是树形对象，就原样保留其中每一个有效节点，
+ *    绝不因为缺字段而整体丢弃、退回空树；只有输入根本不是树对象时才返回 null。
+ * 2. 缺字段一律补兼容默认值；childrenIds 缺失时依据既有 parentId 关系重建，
+ *    保留旧树原有的分叉结构（而不是把所有旧节点误判成孤立叶子）。
+ */
+export function normalizeCounterfactualTree(input: unknown): CounterfactualTree | null {
+  if (!isRecord(input)) return null;
+
+  const rawNodes = isRecord(input.nodes) ? input.nodes : {};
+  const nodes: Record<string, LifeNode> = {};
+  // 记录需要依据 parentId 重建 childrenIds 的旧节点
+  const nodesMissingChildren: string[] = [];
+
+  Object.entries(rawNodes).forEach(([recordKey, rawValue]) => {
+    if (!isRecord(rawValue)) return; // 跳过损坏条目，其余节点全部保留
+
+    const id = typeof rawValue.id === 'string' && rawValue.id ? rawValue.id : recordKey;
+    const layerIndex = asFiniteNumber(rawValue.layerIndex) ? (rawValue.layerIndex as number) : 0;
+    const category = CATEGORY_MAP[rawValue.category as LifeCategory]
+      ? (rawValue.category as LifeCategory)
+      : 'twist';
+
+    if (!Array.isArray(rawValue.childrenIds)) {
+      nodesMissingChildren.push(id);
+    }
+
+    nodes[id] = {
+      id,
+      ...(typeof rawValue.parentId === 'string' && rawValue.parentId
+        ? { parentId: rawValue.parentId }
+        : {}),
+      layerIndex,
+      eraLabel:
+        typeof rawValue.eraLabel === 'string' && rawValue.eraLabel
+          ? rawValue.eraLabel
+          : ERA_LABELS[layerIndex] ?? '',
+      title: typeof rawValue.title === 'string' ? rawValue.title : '',
+      scenarioDescription:
+        typeof rawValue.scenarioDescription === 'string' ? rawValue.scenarioDescription : '',
+      vitality: asFiniteNumber(rawValue.vitality) ? (rawValue.vitality as number) : 0,
+      isPruned: Boolean(rawValue.isPruned),
+      waterCount: asFiniteNumber(rawValue.waterCount) ? (rawValue.waterCount as number) : 0,
+      category,
+      categoryName:
+        typeof rawValue.categoryName === 'string' && rawValue.categoryName
+          ? rawValue.categoryName
+          : CATEGORY_MAP[category].name,
+      color:
+        typeof rawValue.color === 'string' && rawValue.color
+          ? rawValue.color
+          : CATEGORY_MAP[category].color,
+      specimenQuote:
+        typeof rawValue.specimenQuote === 'string' ? rawValue.specimenQuote : '',
+      childrenIds: Array.isArray(rawValue.childrenIds)
+        ? rawValue.childrenIds.filter((c): c is string => typeof c === 'string')
+        : []
+    };
+  });
+
+  // 旧节点没有 childrenIds：用迁移前就存在的 parentId 关系还原分叉结构
+  nodesMissingChildren.forEach(id => {
+    nodes[id].childrenIds = Object.values(nodes)
+      .filter(child => child.parentId === id)
+      .map(child => child.id);
+  });
+
+  const rootId =
+    typeof input.rootId === 'string' && input.rootId
+      ? input.rootId
+      : nodes['node-root']
+        ? 'node-root'
+        : Object.keys(nodes)[0] ?? '';
+
+  return {
+    id: typeof input.id === 'string' && input.id ? input.id : `tree-${Date.now()}`,
+    assumption: typeof input.assumption === 'string' ? input.assumption : '',
+    rootId,
+    nodes,
+    createdAt: typeof input.createdAt === 'string' ? input.createdAt : '',
+    specimens: Array.isArray(input.specimens)
+      ? input.specimens.filter((s): s is LifeSpecimen => isRecord(s))
+      : []
+  };
+}
+
 export function buildCounterfactualTree(assumption: string): CounterfactualTree {
   const seed = [...assumption].reduce((sum, c) => sum + c.charCodeAt(0), 0);
   const nodes: Record<string, LifeNode> = {};
@@ -151,7 +251,11 @@ export function buildCounterfactualTree(assumption: string): CounterfactualTree 
   };
 }
 
-export function waterBranch(tree: CounterfactualTree, nodeId: string): CounterfactualTree {
+export function waterBranch(inputTree: CounterfactualTree, nodeId: string): CounterfactualTree {
+  // 兼容旧树：缺少意外分支字段（childrenIds 等）时先补齐默认值，避免页面抛错
+  const tree = normalizeCounterfactualTree(inputTree);
+  if (!tree) return inputTree;
+
   const target = tree.nodes[nodeId];
   if (!target) return tree;
 
@@ -185,7 +289,11 @@ export function waterBranch(tree: CounterfactualTree, nodeId: string): Counterfa
   return { ...tree };
 }
 
-export function pruneBranch(tree: CounterfactualTree, nodeId: string): CounterfactualTree {
+export function pruneBranch(inputTree: CounterfactualTree, nodeId: string): CounterfactualTree {
+  // 兼容旧树：旧节点可能没有 childrenIds，先迁移再级联修剪
+  const tree = normalizeCounterfactualTree(inputTree);
+  if (!tree) return inputTree;
+
   const pruneRecursive = (id: string) => {
     const n = tree.nodes[id];
     if (!n) return;
@@ -198,7 +306,11 @@ export function pruneBranch(tree: CounterfactualTree, nodeId: string): Counterfa
   return { ...tree };
 }
 
-export function harvestSpecimen(tree: CounterfactualTree, nodeId: string): LifeSpecimen {
+export function harvestSpecimen(inputTree: CounterfactualTree, nodeId: string): LifeSpecimen {
+  // 兼容旧树：补默认值后再溯源采集，旧资料依旧可出标本
+  const tree = normalizeCounterfactualTree(inputTree);
+  if (!tree) throw new Error('反事实树数据损坏');
+
   const node = tree.nodes[nodeId];
   if (!node) throw new Error('节点不存在');
 

@@ -3,13 +3,18 @@ import {
   buildCounterfactualTree,
   waterBranch,
   pruneBranch,
-  harvestSpecimen
+  harvestSpecimen,
+  normalizeCounterfactualTree
 } from '../core/tree-engine';
 import { TreeEnginePort } from '../ports/tree-engine.port';
 
 export class TreeEngineAdapter implements TreeEnginePort {
   createTree(assumption: string): CounterfactualTree {
     return buildCounterfactualTree(assumption);
+  }
+
+  normalizeTree(input: unknown): CounterfactualTree | null {
+    return normalizeCounterfactualTree(input);
   }
 
   water(tree: CounterfactualTree, nodeId: string): CounterfactualTree {

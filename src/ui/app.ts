@@ -1,4 +1,5 @@
 import { CounterfactualTree, LifeSpecimen, LifeNode } from '../core/models';
+import { normalizeCounterfactualTree } from '../core/tree-engine';
 
 export interface TreeUIHandlers {
   onGrowNewTree: (assumption: string) => void;
@@ -19,6 +20,11 @@ export function renderTreeApp(
 ) {
   const esc = (s: string) =>
     s.replace(/[&<>'"]/g, t => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[t] || t));
+
+  // 兼容旧树：补齐意外分支等缺失字段，保留旧树的全部节点，绝不当成空树渲染
+  const normalizedTree = normalizeCounterfactualTree(tree);
+  if (!normalizedTree) return;
+  tree = normalizedTree;
 
   // Organize nodes by layer index (0 to 4)
   const layers: LifeNode[][] = [[], [], [], [], []];
